@@ -3,6 +3,10 @@
  */
 const client = require('./basics');
 
+client.on('data', function (data) {
+    console.log('client data received - ', data);
+});
+
 setInterval(() => {
     const url = 'getJob';
     client.request(url, {id: '001'}).then((output) => {
@@ -10,3 +14,7 @@ setInterval(() => {
     });
     console.log(url, 'requested');
 }, 5000);
+
+setInterval(() => {
+    client.end();
+}, 10000);

@@ -1,11 +1,14 @@
 /*
  * Created by Henry Leu (henryleu@126.com) on 2018/1/22
  */
-
 const Primus = require('primus');
-const ClientTracker = require('./tracker');
+const EventEmitter = require('eventemitter3');
 
-class WebSocketClient {
+const ClientTracker = require('./tracker');
+const { Disconnected, Timeout } = require('./outputs');
+const relayer = (event, target) => (...args) => target.emit(event, ...args);
+
+class WebSocketClient extends EventEmitter {
     constructor ({
         url,
         sessionId = {},
@@ -15,12 +18,13 @@ class WebSocketClient {
         pingTimeout = 35000,
         pathname = '/primus' // server url parameter
     }) {
+        super();
         this._readSessionId = sessionId.reader;
         this._writeSessionId = sessionId.writer;
         this.sessionId = this._readSessionId && this._readSessionId();
 
         const Socket = Primus.createSocket({
-            // transformer, // WebSockets | sockjs
+            transformer, // WebSockets | sockjs
             plugin: {
                 'mirage': require('mirage'),
                 'emit': require('primus-emit')
@@ -51,30 +55,29 @@ class WebSocketClient {
     }
 
     open () {
-        if (this._opened) {
-            console.log('ignore opening for the client is already opened');
-            return;
-        }
+        if (this._opened) return console.log('ignore opening the opened client');
         this._opened = true;
-        this._socket.open(function () {
-            console.error('opened');
-        });
+        this._socket.open();
     }
 
     end () {
-        if (!this._opened) {
-            console.log('ignore ending for the client is already ended');
-            return;
-        }
+        if (!this._opened) return console.log('ignore ending for the ended client');
         this._opened = false;
         this._socket.end();
     }
 
     request (name, body, cfg) {
-        // console.log('subscribe - ', topic);
-        const timeout = (cfg && cfg.timeout) || 3000;
+        const timeout = (cfg && cfg.timeout) || 2000;
         const id = this._rid++; // todo generateId
-        this._socket.emit('request', {body, meta: {id, name, timeout}});
+        const meta = {id, name, timeout};
+
+        if (!this._tracker.connected) {
+            return new Promise((resolve) => {
+                setTimeout(() => resolve({meta: Disconnected.clone(meta).toObject()}), 0);
+            });
+        }
+        this._socket.emit('request', {meta, body});
+
         return new Promise((resolve) => {
             const event = `response [id=${id}]`;
             let resolved = false;
@@ -87,15 +90,20 @@ class WebSocketClient {
                 if (resolved) return;
                 resolved = true;
                 this._socket.removeAllListeners(event);
-                resolve({code: 'timeout', msg: `request [id=${id}] timeout`});
+                resolve({meta: Timeout.clone(meta).toObject()});
             }, timeout);
         });
     }
 
     subscribe (topic, cb) {
-        // console.log('subscribe - ', topic);
         const id = this._rid++;
+        if (!this._tracker.connected) {
+            return new Promise((resolve) => {
+                setTimeout(() => resolve(Disconnected.clone({id, topic}).toObject()), 0);
+            });
+        }
         this._socket.emit('subscribe', {topic, id});
+
         return new Promise((resolve) => {
             const event = `subscribed ${topic} ${id}`;
             let resolved = false;
@@ -111,15 +119,21 @@ class WebSocketClient {
                 if (resolved) return;
                 resolved = true;
                 this._socket.removeAllListeners(event);
-                resolve({code: 'timeout', msg: `subscribe [${topic}] timeout`});
-            }, 3000);
+                resolve({meta: Timeout.clone({id, topic}).toObject()});
+            }, 2000);
         });
     }
 
-    unsubscribe (topic) {
-        // console.log('unsubscribe - ', topic);
+    unsubscribe (topic, cfg) {
+        const timeout = (cfg && cfg.timeout) || 2000;
         const id = this._rid++;
+        if (!this._tracker.connected) {
+            return new Promise((resolve) => {
+                setTimeout(() => resolve(Disconnected.clone({id, topic}).toObject()), 0);
+            });
+        }
         this._socket.emit('unsubscribe', {topic, id});
+
         return new Promise((resolve) => {
             const event = `unsubscribed ${topic} ${id}`;
             let resolved = false;
@@ -135,15 +149,20 @@ class WebSocketClient {
                 if (resolved) return;
                 resolved = true;
                 this._socket.removeAllListeners(event);
-                resolve({code: 'timeout', msg: `unsubscribe [${topic}] timeout`});
-            }, 3000);
+                resolve({meta: Timeout.clone({id, topic}).toObject()});
+            }, timeout);
         });
     }
 
     publish (topic, ...args) {
-        // console.log('publish - ', topic);
         const id = this._rid++;
+        if (!this._tracker.connected) {
+            return new Promise((resolve) => {
+                setTimeout(() => resolve(Disconnected.clone({id, topic, args}).toObject()), 0);
+            });
+        }
         this._socket.emit('publish', {topic, id, args});
+
         return new Promise((resolve) => {
             const event = `published ${topic} ${id}`;
             let resolved = false;
@@ -156,31 +175,24 @@ class WebSocketClient {
                 if (resolved) return;
                 resolved = true;
                 this._socket.removeAllListeners(event);
-                resolve({code: 'timeout', msg: `publish [${topic}] timeout`});
-            }, 3000);
+                resolve({meta: Timeout.clone({id, topic, args}).toObject()});
+            }, 2000);
         });
     }
 
-    _init () {
-        const socket = this._socket;
-        this._tracker.bind(socket);
-        socket.on('open', () => {
-        });
-        socket.on('close', () => {
-        });
-        socket.on('end', function () {
-            console.log('ended');
-        });
+    _relay (...events) {
+        for (const e of events) this._socket.on(e, relayer(e, this));
+    }
 
-        socket.on('data', function (data) {
-            console.log('client data received - ', socket.mirage, data);
-        });
+    _init () {
+        this._tracker.bind(this._socket);
+        this._relay('open', 'close', 'reconnect', 'data', 'error');
 
         /**
          * get session id from server and save it at client side
          * if client is initiated without session id
          */
-        this._writeSessionId && socket.on('mirage', (id) => this._writeSessionId(id));
+        this._writeSessionId && this._socket.on('mirage', (id) => this._writeSessionId(id));
     }
 }
 

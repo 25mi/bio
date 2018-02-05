@@ -8,6 +8,10 @@ class ClientTracker {
         this._connectedOn = new Date().getTime();
     }
 
+    get connected () {
+        return this._connected;
+    }
+
     bind (socket) {
         socket.on('error', function (err) {
             console.log('error - ', err);
