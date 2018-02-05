@@ -2,7 +2,7 @@
   "name": "primus.client",
   "version": "0.0.1",
   "description": "primus client for websocket-like long connection transport",
-  "repository": "https://github.com/henryleu/primus.client",
+  "repository": "https://github.com/25mi/primus.client",
   "license": "UNLICENSED",
   "scripts": {
     "lint": "./node_modules/.bin/eslint src test",

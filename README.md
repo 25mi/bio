@@ -1,2 +1,2 @@
-# bio
-connection server b/s &amp; c/s 
+# primus.client
+websocket client wrapper using primus  
