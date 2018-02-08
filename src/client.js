@@ -8,15 +8,20 @@ const ClientTracker = require('./tracker');
 const { Disconnected, Timeout } = require('./outputs');
 const relayer = (event, target) => (...args) => target.emit(event, ...args);
 
-class WebSocketClient extends EventEmitter {
+class Client extends EventEmitter {
+    static get ReplyTimeout () { return 2000; } // the timeout to get a response event
+    static get ReconnectTimeout () { return 15000; }
+    static get PingTimeout () { return 35000; }
+    static get Pathname () { return '/primus'; } // server url parameter
+
     constructor ({
         url,
         sessionId = {},
         transformer = 'WebSockets',
         websockets = true,
-        reconnectTimeout = 15000,
-        pingTimeout = 35000,
-        pathname = '/primus' // server url parameter
+        reconnectTimeout = Client.ReconnectTimeout,
+        pingTimeout = Client.PingTimeout,
+        pathname = Client.Pathname
     }) {
         super();
         this._readSessionId = sessionId.reader;
@@ -67,7 +72,7 @@ class WebSocketClient extends EventEmitter {
     }
 
     request (name, body, cfg) {
-        const timeout = (cfg && cfg.timeout) || 2000;
+        const timeout = (cfg && cfg.timeout) || Client.ReplyTimeout;
         const id = this._rid++; // todo generateId
         const meta = {id, name, timeout};
 
@@ -120,12 +125,16 @@ class WebSocketClient extends EventEmitter {
                 resolved = true;
                 this._socket.removeAllListeners(event);
                 resolve({meta: Timeout.clone({id, topic}).toObject()});
-            }, 2000);
+            }, Client.ReplyTimeout);
         });
     }
 
-    unsubscribe (topic, cfg) {
-        const timeout = (cfg && cfg.timeout) || 2000;
+    unsubscribe (topic, cfg, cb) {
+        if (typeof cfg === 'function') {
+            cb = cfg;
+            cfg = {};
+        }
+        const timeout = (cfg && cfg.timeout) || Client.ReplyTimeout;
         const id = this._rid++;
         if (!this._tracker.connected) {
             return new Promise((resolve) => {
@@ -141,7 +150,11 @@ class WebSocketClient extends EventEmitter {
                 if (resolved) return;
                 resolved = true;
                 if (!result.code) { // unsubscribed successfully
-                    this._socket.removeAllListeners('publish ' + topic);
+                    if (cb) {
+                        this._socket.removeListener('publish ' + topic, cb);
+                    } else {
+                        this._socket.removeAllListeners('publish ' + topic);
+                    }
                 }
                 resolve(result);
             });
@@ -176,7 +189,7 @@ class WebSocketClient extends EventEmitter {
                 resolved = true;
                 this._socket.removeAllListeners(event);
                 resolve({meta: Timeout.clone({id, topic, args}).toObject()});
-            }, 2000);
+            }, Client.ReplyTimeout);
         });
     }
 
@@ -196,4 +209,4 @@ class WebSocketClient extends EventEmitter {
     }
 }
 
-module.exports = WebSocketClient;
+module.exports = Client;
