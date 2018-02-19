@@ -26,12 +26,8 @@ class QueueAgent {
         return this.client.request(this.prefix + 'createJob', [job, data]).then(isoOutput);
     }
 
-    applyJob (job) {
-        return this.client.request(this.prefix + 'applyJob', [job]).then(isoOutput);
-    }
-
-    ackJob (job, id) {
-        return this.client.request(this.prefix + 'ackJob', [job, id]).then(isoOutput);
+    requestJob (job) {
+        return this.client.request(this.prefix + 'requestJob', [job]).then(isoOutput);
     }
 
     completeJob (job, id) {
@@ -91,7 +87,7 @@ class Worker extends EventEmitter {
     }
 
     failJob (msg) {
-        this.manager.failJob(this.job.id, msg).then((output) => {
+        this.manager.failJob(this.job._id, msg).then((output) => {
             if (output.code) return console.error(output);
             this.status = Idle;
             this.startGrabJob(true);
@@ -100,7 +96,7 @@ class Worker extends EventEmitter {
 
     // todo retry 3 times
     completeJob () {
-        this.manager.completeJob(this.job.id).then((output) => {
+        this.manager.completeJob(this.job._id).then((output) => {
             if (output.code) return console.error(output);
             this.status = Idle;
             this.startGrabJob(true);
@@ -128,11 +124,11 @@ class Worker extends EventEmitter {
     }
 
     grabJob () {
-        return this.manager.applyJob()
+        return this.manager.requestJob()
             .then((output) => {
                 if (output.code) return output;
                 if (!output.job) return Object.assign(output, {code: 'no more jobs', msg: 'no more jobs'});
-                return this.manager.ackJob(output.job.id);
+                return output;
             });
     }
 
@@ -147,6 +143,7 @@ class Worker extends EventEmitter {
 
             me.grabJob()
                 .then((output) => {
+                    console.log(output);
                     if (output.code) return console.error(output);
                     me.processJob(output.job);
                 })
@@ -156,7 +153,12 @@ class Worker extends EventEmitter {
         }
         let retries = 5;
         this.stopGrabJob();
-        this.timer = setInterval(() => { tryGrab(retries--); }, grab ? RetryInterval : PingInterval);
+        this.timer = setInterval(
+            () => {
+                console.log('retries ' + retries);
+                tryGrab(retries--);
+            },
+            grab ? RetryInterval : PingInterval);
     }
 
     stopGrabJob () {
@@ -211,8 +213,7 @@ class Manager extends EventEmitter {
         for (let i = 0; i < this.workers; i++) this.workers[i].notify(queued);
     }
 
-    applyJob () { return this.agent.applyJob(this.job); }
-    ackJob (id) { return this.agent.applyJob(this.job, id); }
+    requestJob () { return this.agent.requestJob(this.job); }
     completeJob (id) { return this.agent.completeJob(this.job, id); }
     failJob (id, error) { return this.agent.failJob(this.job, id, error); }
     subscribeJob () { return this.agent.subscribeJob(this.job, this.notify.bind(this)); }
