@@ -6,10 +6,17 @@ const Queue = require('../src/queue');
 const client = newClient();
 const queue = new Queue({client});
 const jobName = 'enroll';
+let counter = 0;
+
 queue.process(jobName, 2, function (job, next) {
-    setTimeout(() => { next(); }, 20000);
+    if (counter++ % 2 === 0) {
+        setTimeout(() => { next(); }, 10000);
+    } else {
+        setTimeout(() => { next(new Error('job error')); }, 10000);
+    }
 });
 
 setInterval(() => {
     queue.create(jobName, {district: '南开', school: '南开5幼儿园'}).then(() => {});
+    // queue.create(jobName, {district: '南开', school: '南开5幼儿园'}).then(() => {});
 }, 10000);

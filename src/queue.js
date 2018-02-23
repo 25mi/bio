@@ -2,17 +2,17 @@
  * Created by Henry Leu (henryleu@126.com) on 2018/1/22
  */
 const EventEmitter = require('eventemitter3');
-// const { Disconnected, Timeout } = require('./outputs');
+const { LostJobData } = require('./outputs');
 
 const Idle = 0;
 const WIP = 1;
-let _workerId = new Date().getTime() - (40 * 365 * 2400 * 3600000);
+// let _workerId = new Date().getTime() - (40 * 365 * 24 * 3600000);
+let _workerId = 1;
 const nextWorkerId = () => _workerId++;
-const RetryInterval = 500;
+const RetryInterval = 1000;
 const PingInterval = 5000;
-// const Running = 'running';
-// const Completed = 'complete';
-// const Failed = 'failed';
+const CommitRetries = 20;
+const CheckoutRetries = 10;
 const isoOutput = (output) => Object.assign({}, output.meta, output.body);
 
 class QueueAgent {
@@ -55,7 +55,7 @@ class Worker extends EventEmitter {
         this.jobName = jobName;
         this.onProcess = onProcess;
         this.status = Idle;
-        this.id = nextWorkerId();
+        this.workerId = nextWorkerId();
         this.job = null;
         this.timer = null;
         this.stopping = true;
@@ -68,7 +68,7 @@ class Worker extends EventEmitter {
         console.log('starting');
         if (!this.stopping) return;
         this.stopping = false;
-        this.startGrabJob(true);
+        this.requestJob();
     }
 
     /**
@@ -78,33 +78,46 @@ class Worker extends EventEmitter {
     stop () {
         if (this.stopping) return;
         this.stopping = true;
-        this.stopGrabJob();
+        this.stopRetry();
     }
 
     notify () {
         if (this.status === WIP) return;
-        this.startGrabJob(true);
+        this.requestJob();
     }
 
     failJob (msg) {
-        this.manager.failJob(this.job._id, msg).then((output) => {
-            if (output.code) return console.error(output);
-            this.status = Idle;
-            this.startGrabJob(true);
+        this.startRetry(CommitRetries, RetryInterval, () => {
+            return this.manager.failJob(this.job._id, msg).then((output) => {
+                if (!output.code) {
+                    console.log('failJob - ok');
+                    this.stopRetry();
+                    this.requestJob();
+                } else {
+                    console.error('failJob - error: ' + output.msg);
+                }
+                return output;
+            });
         });
     }
 
-    // todo retry 3 times
     completeJob () {
-        this.manager.completeJob(this.job._id).then((output) => {
-            if (output.code) return console.error(output);
-            this.status = Idle;
-            this.startGrabJob(true);
+        this.startRetry(CommitRetries, RetryInterval, () => {
+            return this.manager.completeJob(this.job._id).then((output) => {
+                if (!output.code) {
+                    console.log('completeJob - ok');
+                    this.stopRetry();
+                    this.requestJob();
+                } else {
+                    console.error('completeJob - error: ' + output.msg);
+                }
+                return output;
+            });
         });
     }
 
     processJob (job) {
-        this.stopGrabJob();
+        job.workerId = this.workerId;
         this.job = job;
         this.status = WIP;
         try {
@@ -123,45 +136,45 @@ class Worker extends EventEmitter {
         }
     }
 
-    grabJob () {
-        return this.manager.requestJob()
-            .then((output) => {
-                if (output.code) return output;
-                if (!output.job) return Object.assign(output, {code: 'no more jobs', msg: 'no more jobs'});
-                return output;
-            });
-    }
-
-    startGrabJob (grab) {
-        if (this.stopping) return;
-
-        const me = this;
-        function tryGrab (retries) {
-            if (grab && !retries) {
-                return me.startGrabJob(false);
-            }
-
-            me.grabJob()
+    requestJob () {
+        this.status = Idle;
+        const doRequestJob = () => {
+            return this.manager.requestJob()
+                .then((output) => !output.code && !output.job ? LostJobData.clone() : output)
                 .then((output) => {
-                    console.log(output);
-                    if (output.code) return console.error(output);
-                    me.processJob(output.job);
-                })
-                .catch((err) => {
-                    console.error(err);
+                    if (output.code) {
+                        console.log('requestJob - error: ' + output.msg);
+                    } else {
+                        console.log('requestJob - ok');
+                        this.stopRetry();
+                        this.processJob(output.job);
+                    }
+                    return output;
                 });
-        }
-        let retries = 5;
-        this.stopGrabJob();
-        this.timer = setInterval(
-            () => {
-                console.log('retries ' + retries);
-                tryGrab(retries--);
-            },
-            grab ? RetryInterval : PingInterval);
+        };
+        this.startRetry(CheckoutRetries, RetryInterval, doRequestJob, () => {
+            this.startRetry(0, PingInterval, doRequestJob);
+        });
     }
 
-    stopGrabJob () {
+    startRetry (retries, interval, fn, next) {
+        if (retries === 0) { // poll mode
+            this.timer = setInterval(fn, interval);
+        } else { // retry mode
+            this.timer = setInterval(
+                () => {
+                    console.log('retries - ' + retries);
+                    if (retries-- <= 0) {
+                        this.stopRetry();
+                        next && next();
+                    } else {
+                        fn();
+                    }
+                }, interval);
+        }
+    }
+
+    stopRetry () {
         if (!this.timer) return;
         clearInterval(this.timer);
         this.timer = null;
@@ -187,7 +200,6 @@ class Manager extends EventEmitter {
      */
     start () {
         if (this.started) return;
-        this._init();
         for (let worker of this.workers) worker.start();
         return this.subscribeJob().then((output) => {
             if (output.code) return output;
@@ -222,7 +234,6 @@ class Manager extends EventEmitter {
     _init () {
         for (let i = 0; i < this.concurs; i++) {
             let worker = new Worker(this, this.job, this.onProcess);
-            // console.log(worker);
             this.workers.push(worker);
         }
     }
