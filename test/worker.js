@@ -2,7 +2,7 @@
  * Created by Henry Leu (henryleu@126.com) on 2017/12/25
  */
 const newClient = require('./basics');
-const Queue = require('../src/queue');
+const Queue = require('../src').Queue;
 const client = newClient();
 const queue = new Queue({client});
 const jobName = 'enroll';
